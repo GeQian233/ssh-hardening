@@ -8,16 +8,37 @@ Ubuntu 24.04+ / Debian 12+ SSH 一键安全加固脚本。项目通过 `install.
 
 ## 一键运行
 
+**推荐方式（更稳定，避免部分环境下 apt 被挂起）：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/GeQian233/ssh-hardening/main/install.sh -o /tmp/install.sh
+sudo bash /tmp/install.sh
+```
+
+或者直接运行核心脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/GeQian233/ssh-hardening/main/ssh-hardening.sh -o /tmp/ssh-hardening.sh
+sudo bash /tmp/ssh-hardening.sh
+```
+
+---
+
+**管道方式（部分新版 Ubuntu + sudo-rs 环境下可能卡住）：**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/GeQian233/ssh-hardening/main/install.sh | sudo bash
 ```
 
-必须使用 Bash，不要把命令中的 `bash` 改成 `sh`。脚本需要交互式终端来输入新 SSH 端口和 SSH 公钥，因此请在正常 SSH 终端中运行，不适用于无 TTY 的自动化任务。
+> 必须使用 Bash，不要把命令中的 `bash` 改成 `sh`。脚本需要交互式终端来输入新 SSH 端口和 SSH 公钥，因此请在正常 SSH 终端中运行，不适用于无 TTY 的自动化任务。
+>
+> 如果在 `Processing triggers for libc-bin` 处长时间无响应，且 `ps` 显示进程状态为 `T+`，可在原窗口执行 `fg`，或另开窗口执行 `kill -CONT <PID>` 恢复。
 
 如果当前已经是 root：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GeQian233/ssh-hardening/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GeQian233/ssh-hardening/main/install.sh -o /tmp/install.sh
+bash /tmp/install.sh
 ```
 
 ## 支持范围与依赖
@@ -66,7 +87,9 @@ sudo bash ssh-hardening.sh
 - 查看 UFW：`ufw status numbered`
 - 查看 Fail2Ban：`fail2ban-client status`、`fail2ban-client status sshd`
 - 如果无法连接，优先使用云厂商 VNC/串口/救援控制台恢复，不要反复运行脚本。
+- 若安装依赖时卡在 `Processing triggers for libc-bin` 且进程状态为 `T+`，在原终端执行 `fg`，或另开终端执行 `kill -CONT <PID>`。
 
 ## License
 
 MIT License，详见仓库中的 `LICENSE` 文件。
+
