@@ -1,6 +1,6 @@
 # SSH Hardening for Ubuntu & Debian
 
-Ubuntu 24.04+ / Debian 12+ 一键系统优化 + SSH 安全加固脚本。
+Ubuntu 24.04+ / Debian 12+ 一键系统优化 + SSH 安全加固脚本。AI搓的-不保证兼容性-自用为主
 
 包含：系统软件包升级、启用 BBR、TCP 窗口调优，然后自动执行原有的 SSH 加固流程。
 
