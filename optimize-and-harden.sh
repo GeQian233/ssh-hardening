@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 完整一键优化 + SSH 加固脚本
-# 流程：系统升级 → 启用 BBR → TCP 窗口调优 → 调用原有 SSH 加固脚本
+# 流程：系统升级 → 启用 BBR → TCP 基础调优（动态 BDP 缓冲区 + initcwnd） → 调用原有 SSH 加固脚本
 # 仅支持 Ubuntu 24.04+ / Debian 12+
 # 作者仓库：https://github.com/GeQian233/ssh-hardening
+# TCP 基础调优思路参考 tcpfit（Kylin010/tcpfit），仅实现基础部分，不含拐点扫描与整形
 
 set -Eeuo pipefail
 umask 077
@@ -71,17 +72,14 @@ info "软件包升级完成。"
 # ---------- 2. 启用 BBR ----------
 step "2. 启用 TCP BBR"
 
-# 加载模块
 if ! lsmod | grep -q '^tcp_bbr'; then
   modprobe tcp_bbr 2>/dev/null || warn "modprobe tcp_bbr 失败（某些内核可能已内置）"
 fi
 
-# 持久化模块加载
 mkdir -p /etc/modules-load.d
 echo 'tcp_bbr' > /etc/modules-load.d/bbr.conf
 chmod 644 /etc/modules-load.d/bbr.conf
 
-# 使用独立 drop-in，避免污染主 sysctl.conf
 cat > /etc/sysctl.d/99-bbr.conf <<'EOF'
 # Managed by optimize-and-harden.sh
 net.core.default_qdisc=fq
@@ -91,7 +89,6 @@ chmod 644 /etc/sysctl.d/99-bbr.conf
 
 sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-bbr.conf >/dev/null 2>&1 || true
 
-# 验证
 CURRENT_CC="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo unknown)"
 AVAILABLE_CC="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo unknown)"
 info "当前拥塞控制：${CURRENT_CC}"
@@ -102,40 +99,150 @@ else
   warn "BBR 可能未完全生效，请检查内核是否支持（需要 4.9+）。"
 fi
 
-# ---------- 3. TCP 窗口与网络调优 ----------
-step "3. TCP 窗口调优（等效于常见 tools.sh 参数）"
+# ---------- 3. TCP 基础调优（动态 BDP + initcwnd） ----------
+step "3. TCP 基础调优（动态缓冲区 + initcwnd）"
 
-cat > /etc/sysctl.d/99-tcp-tune.conf <<'EOF'
+# 检测内存
+RAM_MB=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+info "检测到内存：${RAM_MB} MB"
+
+# 交互获取带宽与 RTT（用于 BDP 计算）
+echo -e "${YELLOW}请输入机器标称带宽（Mbps，例如 500、1000）：${NC}"
+read -r -p "> " BW_MBPS || BW_MBPS=500
+[[ "$BW_MBPS" =~ ^[0-9]+$ ]] && [[ "$BW_MBPS" -gt 0 ]] || BW_MBPS=500
+info "使用带宽：${BW_MBPS} Mbps"
+
+echo -e "${YELLOW}请输入典型 RTT（毫秒，回车默认 150，适合跨境）：${NC}"
+read -r -p "> " RTT_MS || RTT_MS=150
+[[ "$RTT_MS" =~ ^[0-9]+$ ]] && [[ "$RTT_MS" -ge 1 && "$RTT_MS" -le 500 ]] || RTT_MS=150
+info "使用 RTT：${RTT_MS} ms"
+
+# 角色：代理场景保守一点
+ROLE="proxy"
+info "默认按代理（proxy）角色设置缓冲区（更保守）"
+
+# 计算 BDP（字节）
+BDP_BYTES=$(awk -v b="$BW_MBPS" -v r="$RTT_MS" 'BEGIN{printf "%d", b*1000000/8*(r/1000)}')
+
+# 缓冲区上限：2×BDP + 2MiB，受内存约束，下限 4MB，上限 256MB
+BUF_MAX=$(awk -v b="$BDP_BYTES" -v m="$RAM_MB" 'BEGIN{
+  v = b*2 + 2097152
+  cap = m*32768
+  if(cap > 268435456) cap = 268435456
+  if(v > cap) v = cap
+  if(v < 4194304) v = 4194304
+  printf "%d", v
+}')
+
+# 默认缓冲区（proxy 角色 1MB 起步）
+BUF_DEF=1048576
+
+# tcp_mem（页）
+TCP_MEM=$(awk -v m="$RAM_MB" 'BEGIN{
+  pg=m*1024/4
+  low=int(pg/16); pres=int(pg/8); max=int(pg/4)
+  if(low<4096) low=4096; if(pres<8192) pres=8192; if(max<16384) max=16384
+  printf "%d %d %d", low, pres, max
+}')
+
+info "BDP ≈ $((BDP_BYTES/1048576)) MB，缓冲区上限 ≈ $((BUF_MAX/1048576)) MB"
+
+# 写入完整调优配置
+cat > /etc/sysctl.d/99-tcp-tune.conf <<EOF
 # Managed by optimize-and-harden.sh
-# TCP 窗口与缓冲区调优（保守且常用的高性能参数）
-net.ipv4.tcp_no_metrics_save=1
-net.ipv4.tcp_ecn=0
-net.ipv4.tcp_frto=0
-net.ipv4.tcp_mtu_probing=0
-net.ipv4.tcp_rfc1337=0
-net.ipv4.tcp_sack=1
-net.ipv4.tcp_fack=1
+# 基础调优：动态 BDP 缓冲区 + 常用优化参数
+# 带宽 ${BW_MBPS} Mbps / RTT ${RTT_MS} ms / RAM ${RAM_MB} MB / role ${ROLE}
+
+# 拥塞控制与队列
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+
+# 缓冲区（动态计算）
+net.core.rmem_max=${BUF_MAX}
+net.core.wmem_max=${BUF_MAX}
+net.ipv4.tcp_rmem=4096 ${BUF_DEF} ${BUF_MAX}
+net.ipv4.tcp_wmem=4096 ${BUF_DEF} ${BUF_MAX}
+net.ipv4.tcp_mem=${TCP_MEM}
+
+# 窗口与基础优化
 net.ipv4.tcp_window_scaling=1
-net.ipv4.tcp_adv_win_scale=1
 net.ipv4.tcp_moderate_rcvbuf=1
-net.core.rmem_max=33554432
-net.core.wmem_max=33554432
-net.ipv4.tcp_rmem=4096 87380 33554432
-net.ipv4.tcp_wmem=4096 16384 33554432
-net.ipv4.udp_rmem_min=8192
-net.ipv4.udp_wmem_min=8192
+net.ipv4.tcp_adv_win_scale=1
 net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_no_metrics_save=1
+net.ipv4.tcp_mtu_probing=1
+net.ipv4.tcp_sack=1
+net.ipv4.tcp_dsack=1
+net.ipv4.tcp_timestamps=1
+net.ipv4.tcp_fastopen=3
+
+# 队列与连接
+net.core.netdev_max_backlog=16384
+net.core.netdev_budget=600
+net.core.optmem_max=65536
+net.core.somaxconn=8192
+net.ipv4.tcp_max_syn_backlog=8192
+net.ipv4.tcp_syncookies=1
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_fin_timeout=15
+net.ipv4.tcp_keepalive_time=600
+net.ipv4.ip_local_port_range=1024 65535
+
+# 其他
+vm.min_free_kbytes=32768
 fs.file-max=1000000
 EOF
 chmod 644 /etc/sysctl.d/99-tcp-tune.conf
 
 sysctl --system >/dev/null 2>&1 || true
-info "TCP 调优参数已写入 /etc/sysctl.d/99-tcp-tune.conf 并应用。"
+info "TCP 基础调优参数已写入 /etc/sysctl.d/99-tcp-tune.conf 并应用。"
+
+# 设置 initcwnd / initrwnd = 32 并尝试简单持久化
+step "3.1 设置 initcwnd=32"
+
+if ip route show default >/dev/null 2>&1; then
+  DEFAULT_ROUTE=$(ip route show default | head -1)
+  if [[ -n "$DEFAULT_ROUTE" ]]; then
+    ip route replace $DEFAULT_ROUTE initcwnd 32 initrwnd 32 2>/dev/null && \
+      info "已为默认路由设置 initcwnd/initrwnd=32" || \
+      warn "设置 initcwnd 失败（可能需要手动处理）"
+  fi
+fi
+
+# 简单持久化：systemd oneshot（重启后重新应用）
+mkdir -p /usr/local/sbin
+cat > /usr/local/sbin/set-initcwnd.sh <<'EOF'
+#!/bin/bash
+# 简单恢复 initcwnd=32
+sleep 2
+ip route show default | head -1 | while read -r line; do
+  ip route replace $line initcwnd 32 initrwnd 32 2>/dev/null || true
+done
+EOF
+chmod 755 /usr/local/sbin/set-initcwnd.sh
+
+cat > /etc/systemd/system/set-initcwnd.service <<'EOF'
+[Unit]
+Description=Restore initcwnd=32 on default route
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/set-initcwnd.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable --now set-initcwnd.service >/dev/null 2>&1 || warn "initcwnd 服务启用失败（可忽略）"
+info "已创建简单 initcwnd 持久化服务（重启后生效）"
 
 # ---------- 4. 其他实用优化 ----------
 step "4. 其他补充优化"
 
-# 提高文件描述符限制（systemd 层面）
 mkdir -p /etc/systemd/system.conf.d
 cat > /etc/systemd/system.conf.d/limits.conf <<'EOF'
 [Manager]
