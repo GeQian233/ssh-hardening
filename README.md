@@ -16,7 +16,7 @@ Ubuntu 24.04+ / Debian 12+ 一键系统优化 + SSH 安全加固脚本。AI 搓�
 ```bash
 ssh-keygen -t ed25519 -C "你的备注" -f $HOME\.ssh\你的密钥名称
 ```
-密钥文件会存放在 C:\Users\你的用户名\.ssh\
+密钥文件会存放在 C:\Users\你的用户名\.ssh\目录下
 ## 一键运行（推荐）
 
 **推荐方式（更稳定）：**
