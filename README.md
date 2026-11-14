@@ -13,9 +13,8 @@ Ubuntu 24.04+ / Debian 12+ 一键系统优化 + SSH 安全加固脚本。AI 搓�
 > - 本项目核心 SSH 加固脚本为 V5.1。已在维护者的 Ubuntu 26.04.1 / 24.04 环境验证；Debian 兼容性请自行测试。
 
 ## SSH 密钥生成
-
 ```bash
-ssh-keygen -t ed25519 -C "你的备注" -f ~/.ssh/自定义密钥名称
+ssh-keygen -t ed25519 -C "你的备注" -f $HOME\.ssh\你的密钥名称
 ```
 密钥文件会存放在 C:\Users\你的用户名\.ssh\
 ## 一键运行（推荐）
