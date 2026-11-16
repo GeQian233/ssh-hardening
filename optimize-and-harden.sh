@@ -57,6 +57,37 @@ export APT_LISTCHANGES_FRONTEND=none
 info "正在执行 apt update..."
 apt-get update || { err "apt update 失败，请检查网络和软件源"; exit 1; }
 
+# ---------- 1.1 修复常见 VPS grub-pc 升级失败 ----------
+# 云镜像常把 grub-pc/install_devices 指向已不存在的设备（如 /dev/sda）
+# 非交互 apt upgrade 时会因此失败，这里自动检测根磁盘并预置正确值
+if dpkg -s grub-pc >/dev/null 2>&1; then
+  info "检测并修正 grub-pc 安装设备（避免 VPS 升级失败）..."
+  ROOT_SOURCE=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+  DISK=""
+  if [[ -n "$ROOT_SOURCE" ]]; then
+    DISK=$(lsblk -no PKNAME "$ROOT_SOURCE" 2>/dev/null | head -n1 || true)
+    if [[ -n "$DISK" ]]; then
+      DISK="/dev/$DISK"
+    else
+      DISK=$(echo "$ROOT_SOURCE" | sed -E 's/[0-9]+$//')
+    fi
+  fi
+  if [[ -z "$DISK" || ! -b "$DISK" ]]; then
+    PROBED=$(grub-probe -t disk /boot/grub 2>/dev/null || true)
+    if [[ -n "$PROBED" && -b "$PROBED" ]]; then
+      DISK="$PROBED"
+    fi
+  fi
+  if [[ -n "$DISK" && -b "$DISK" ]]; then
+    info "将 grub-pc/install_devices 设为 $DISK"
+    echo "grub-pc grub-pc/install_devices multiselect $DISK" | debconf-set-selections 2>/dev/null || true
+    echo "set grub-pc/install_devices $DISK" | debconf-communicate 2>/dev/null || true
+  else
+    warn "无法自动检测根磁盘，grub-pc 升级若失败请手动修正"
+  fi
+fi
+
+
 warn "即将执行 apt upgrade（可能升级内核等组件，耗时较长，完成后可能需要重启才能完全生效）。"
 info "正在执行 apt upgrade..."
 if ! apt-get upgrade -y \
