@@ -464,11 +464,13 @@ if [[ $UFW_WAS_ACTIVE -eq 0 ]]; then
 fi
 ufw reload >/dev/null
 
-# 安装并配置 Fail2Ban。
-
+# 安装并配置 Fail2Ban（双保险：jail.local + jail.d，兼容 Fail2Ban 1.1.x）
 mkdir -p /etc/fail2ban/jail.d
-cat > "$JAIL" <<EOF
+
+# 主覆盖文件（优先级更高）
+cat > /etc/fail2ban/jail.local <<EOF
 # Managed by ssh-harden-debian-ubuntu-v5.1.sh
+# 强制覆盖默认 port=ssh
 [DEFAULT]
 ignoreip = 127.0.0.1/8 ::1
 bantime = -1
@@ -486,6 +488,22 @@ maxretry = 3
 findtime = 10m
 bantime = -1
 EOF
+
+# 同时写 jail.d 作为备份
+cat > "$JAIL" <<EOF
+# Managed by ssh-harden-debian-ubuntu-v5.1.sh
+[sshd]
+enabled = true
+port = $PORT
+filter = sshd
+backend = systemd
+maxretry = 3
+findtime = 10m
+bantime = -1
+EOF
+
+chmod 644 /etc/fail2ban/jail.local "$JAIL"
+
 # 先验证配置语法，再启动服务；systemctl 返回不代表 Fail2Ban socket 已可用。
 fail2ban-client -t
 systemctl enable fail2ban >/dev/null
@@ -526,6 +544,10 @@ grep -Fq "['port', '$PORT']" <<< "$F2B_DUMP" ||
     die "Fail2Ban 解析后的 sshd action 端口不是 $PORT。"
 grep -Fq "['set', 'sshd', 'addaction', 'ufw']" <<< "$F2B_DUMP" ||
     die "Fail2Ban 实际封禁动作不是 UFW。"
+
+# 额外验证：确认配置文件确实包含正确端口
+grep -q "port = $PORT" /etc/fail2ban/jail.local || die "jail.local 未正确写入端口 $PORT"
+grep -q "port = $PORT" "$JAIL" || die "jail.d 文件未正确写入端口 $PORT"
 
 # 应用 SSH 配置：socket activation 和传统服务分别处理。
 if [[ "$SSH_SOCKET_ACTIVE" -eq 1 ]]; then
