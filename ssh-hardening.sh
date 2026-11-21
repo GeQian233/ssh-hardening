@@ -140,16 +140,19 @@ SYSTEMD_VERSION="$(systemctl --version | awk 'NR==1 {print $2}')"
 version_ge "$SYSTEMD_VERSION" 252 "systemd"
 
 SSHD_VERSION_RAW="$(sshd -V 2>&1 || true)"
-SSHD_VERSION="$(sed -nE 's/.*OpenSSH_([0-9]+\.[0-9]+(p[0-9]+)?).*/\1/p' <<< "$SSHD_VERSION_RAW" | head -n1)"
+SSHD_VERSION="$(sed -nE 's/.*OpenSSH_([0-9]+\.[0-9]+(p[0-9]+)?).*/\1/p' <<< "$SSHD_VERSION_RAW")"
+SSHD_VERSION="${SSHD_VERSION%%$'\n'*}"
 [[ -n "$SSHD_VERSION" ]] || die "无法识别 OpenSSH 版本：$SSHD_VERSION_RAW。未修改任何配置。"
 version_ge "$SSHD_VERSION" 9.2p1 "OpenSSH"
 
-UFW_VERSION_RAW="$(ufw --version 2>&1 | head -n1)"
+UFW_VERSION_RAW="$(ufw --version 2>&1)"
+UFW_VERSION_RAW="${UFW_VERSION_RAW%%$'\n'*}"
 UFW_VERSION="$(sed -nE 's/.*ufw ([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' <<< "$UFW_VERSION_RAW")"
 [[ -n "$UFW_VERSION" ]] || die "无法识别 UFW 版本：$UFW_VERSION_RAW。未修改任何配置。"
 version_ge "$UFW_VERSION" 0.36.2 "UFW"
 
-F2B_VERSION_RAW="$(fail2ban-client --version 2>&1 | head -n1)"
+F2B_VERSION_RAW="$(fail2ban-client --version 2>&1)"
+F2B_VERSION_RAW="${F2B_VERSION_RAW%%$'\n'*}"
 F2B_VERSION="$(sed -nE 's/.*[vV]([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p' <<< "$F2B_VERSION_RAW")"
 [[ -n "$F2B_VERSION" ]] || die "无法识别 Fail2Ban 版本：$F2B_VERSION_RAW。未修改任何配置。"
 version_ge "$F2B_VERSION" 1.0.2 "Fail2Ban"
@@ -196,7 +199,8 @@ esac
 [[ "$FW_BACKEND" == "$FW6_BACKEND" ]] || die "IPv4/IPv6 防火墙后端不一致（$FW_BACKEND / $FW6_BACKEND），为避免规则遗漏已停止；未修改任何配置。"
 if [[ "$FW_BACKEND" == "nf_tables" ]]; then
     command -v nft >/dev/null 2>&1 || die "iptables 使用 nf_tables 后端，但缺少 nft 命令；未修改任何配置。"
-    NFT_VERSION="$(nft --version 2>&1 | head -n1)"
+    NFT_VERSION="$(nft --version 2>&1)"
+    NFT_VERSION="${NFT_VERSION%%$'\n'*}"
 else
     NFT_VERSION="未使用（iptables legacy 后端）"
 fi
